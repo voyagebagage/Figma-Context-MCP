@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { FigmaService } from "./services/figma";
+import { PaginationService } from "./services/pagination";
 import { Transport } from "@modelcontextprotocol/sdk/shared/transport";
 import express, { Request, Response } from "express";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
@@ -22,21 +23,35 @@ export class FigmaMcpServer {
   }
 
   private registerTools(): void {
-    // Tool to get file information
+    // Tool to get file information with pagination
     this.server.tool(
       "get-file",
       "Get layout information about an entire Figma file",
       {
         fileKey: z.string().describe("The key of the Figma file to fetch"),
         depth: z.number().optional().describe("How many levels deep to traverse the node tree"),
+        page: z.number().optional().describe("Page number for pagination"),
+        pageSize: z.number().optional().describe("Number of characters per page")
       },
-      async ({ fileKey, depth }) => {
+      async ({ fileKey, depth, page = 1, pageSize }) => {
         try {
           console.log(`Fetching file: ${fileKey} (depth: ${depth ?? "default"})`);
           const file = await this.figmaService.getFile(fileKey, depth);
           console.log(`Successfully fetched file: ${file.name}`);
+
+          // Paginate the response
+          const paginatedResponse = PaginationService.paginate(file, page, pageSize);
+
           return {
-            content: [{ type: "text", text: JSON.stringify(file, null, 2) }],
+            content: [
+              { 
+                type: "text",
+                text: JSON.stringify({
+                  data: paginatedResponse.data,
+                  pagination: paginatedResponse.metadata
+                }, null, 2)
+              }
+            ],
           };
         } catch (error) {
           console.error(`Error fetching file ${fileKey}:`, error);
@@ -47,7 +62,7 @@ export class FigmaMcpServer {
       },
     );
 
-    // Tool to get node information
+    // Tool to get node information with pagination
     this.server.tool(
       "get-node",
       "Get layout information about a specific node in a Figma file",
@@ -55,8 +70,10 @@ export class FigmaMcpServer {
         fileKey: z.string().describe("The key of the Figma file containing the node"),
         nodeId: z.string().describe("The ID of the node to fetch"),
         depth: z.number().optional().describe("How many levels deep to traverse the node tree"),
+        page: z.number().optional().describe("Page number for pagination"),
+        pageSize: z.number().optional().describe("Number of characters per page")
       },
-      async ({ fileKey, nodeId, depth }) => {
+      async ({ fileKey, nodeId, depth, page = 1, pageSize }) => {
         try {
           console.log(
             `Fetching node: ${nodeId} from file: ${fileKey} (depth: ${depth ?? "default"})`,
@@ -65,8 +82,20 @@ export class FigmaMcpServer {
           console.log(
             `Successfully fetched node: ${node.name} (ids: ${Object.keys(node.nodes).join(", ")})`,
           );
+
+          // Paginate the response
+          const paginatedResponse = PaginationService.paginate(node, page, pageSize);
+
           return {
-            content: [{ type: "text", text: JSON.stringify(node, null, 2) }],
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  data: paginatedResponse.data,
+                  pagination: paginatedResponse.metadata
+                }, null, 2)
+              }
+            ],
           };
         } catch (error) {
           console.error(`Error fetching node ${nodeId} from file ${fileKey}:`, error);
@@ -98,7 +127,6 @@ export class FigmaMcpServer {
 
     app.post("/messages", async (req: Request, res: Response) => {
       if (!this.sseTransport) {
-        // @ts-expect-error Not sure why Express types aren't working
         res.sendStatus(400);
         return;
       }
